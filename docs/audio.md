@@ -134,7 +134,9 @@ exporter keeps the packet that reaches or crosses the budget and drops later pac
 For a nonzero skip, the exporter first looks for a byte-for-byte overlap with the previous block's retained
 tail. It tries the interleaved count and also accepts a per-channel count when that verifies an exact overlap.
 If neither matches and the previous block fell short of its budget, the exporter subtracts that shortfall
-from the interleaved skip converted to frames. The remainder must be nonnegative and end on a packet boundary.
+from the interleaved skip converted to frames. An empty block with a positive budget contributes the full budget
+as its shortfall. An empty block with no budget leaves the preceding block's state intact. The remainder must be
+nonnegative and end on a packet boundary.
 An unresolved skip rejects that descriptor so independent streams can still export. Each descriptor channel
 becomes one Ogg Opus file.
 

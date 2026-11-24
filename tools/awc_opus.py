@@ -79,7 +79,7 @@ def ogg_page(serial: int, seq: int, granule: int, packets: list, flags: int) -> 
     return bytes(page)
 
 
-def opus_samples(packet: bytes) -> int:
+def opus_samples(packet: bytes | memoryview) -> int:
     """Samples at 48 kHz in one Opus packet (RFC 6716 TOC)."""
     toc = packet[0]
     config = toc >> 3
@@ -253,7 +253,8 @@ def parse_awc(d: bytes):
     return streams, music
 
 
-def repeated_prefix_packets(packets: list[bytes], previous: list[bytes], samples: int) -> int | None:
+def repeated_prefix_packets(packets: list[bytes] | list[memoryview], previous: list[bytes] | list[memoryview],
+                            samples: int) -> int | None:
     """Count whole leading packets that repeat the previous chunk's tail, or reject a bad skip."""
     for count, packet in enumerate(packets, 1):
         duration = opus_samples(packet)
@@ -265,24 +266,22 @@ def repeated_prefix_packets(packets: list[bytes], previous: list[bytes], samples
     return None
 
 
-def _trim_packets_to_budget(packets: list[bytes], target_frames: int) -> tuple[list[bytes], int]:
+def _trim_packets_to_budget(packets: list[bytes] | list[memoryview],
+                            target_frames: int) -> tuple[list[bytes] | list[memoryview], int]:
     """Trim trailing subblock padding packets past a chunk's declared per-channel frame budget.
 
     Returns (kept_packets, deficit_frames) where deficit_frames > 0 if the chunk's packets
     stopped short of target_frames.
     """
-    total = sum(opus_samples(p) for p in packets)
-    if total > target_frames:
-        acc = 0
-        for idx, packet in enumerate(packets):
-            acc += opus_samples(packet)
-            if acc >= target_frames:
-                return packets[:idx + 1], 0
-        return packets, 0
+    total = 0
+    for end, packet in enumerate(packets, 1):
+        total += opus_samples(packet)
+        if total >= target_frames:
+            return packets[:end], 0
     return packets, target_frames - total
 
 
-def _drop_exact_prefix_packets(packets: list[bytes], frames: int) -> int | None:
+def _drop_exact_prefix_packets(packets: list[bytes] | list[memoryview], frames: int) -> int | None:
     """Count leading whole packets whose duration sums exactly to `frames`, or None."""
     if frames == 0:
         return 0
@@ -355,15 +354,17 @@ def music_channels(d: bytes, mus, data, collect_packets: bool = True):
                     if info[c][5] == 2:
                         break
             block_data[c].append((skip, block_samples, start, size))
+    packet_data = memoryview(d)
     for c in range(channels):
         pch = max(1, info[c][5])
         previous = []
         prev_deficit = 0
         for skip, block_samples, start, size in block_data[c]:
-            packets = opus_packets(d, start, size)
+            packets = (opus_packets(d, start, size) if collect_packets else
+                       [packet_data[a:b] for a, b in opus_packet_ranges(d, start, size)])
             kept = packets
             deficit = 0
-            if packets and block_samples > 0:
+            if block_samples > 0:
                 if block_samples % pch != 0:
                     return []
                 kept, deficit = _trim_packets_to_budget(packets, block_samples // pch)
@@ -391,7 +392,7 @@ def music_channels(d: bytes, mus, data, collect_packets: bool = True):
                     repeated = drop
                 else:
                     return []
-            if kept:
+            if kept or block_samples:
                 previous = kept
                 prev_deficit = deficit
             if collect_packets and kept:
