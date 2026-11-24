@@ -126,8 +126,12 @@ then 16 bytes per channel:
 ```
 
 At the `0x55` data offset, each chunk starts with a 24-byte record per channel. The record's `+4` word is the
-channel's subblock count and `+8` is a repeated-prefix sample count to skip. The channel data are its run of
-2048-byte subblocks after the 2048-aligned header. The skipped samples repeat the previous chunk's tail. The
+channel's subblock count, `+8` is the repeated-prefix sample count to skip (`skip_samples`), and `+12` is the
+chunk's sample budget (`block_samples`). Both `+8` and `+12` count interleaved samples across the packet channel
+count (2× frames for stereo Opus). The channel data are its run of 2048-byte subblocks after the 2048-aligned
+header. When `block_samples > 0`, trailing subblock padding packets past `block_samples / packet_channels` are
+trimmed; when a chunk stops short of its `block_samples` budget, the deficit carries into the next chunk's
+`skip_samples` check so multi-stem banks with interleaved skips and short blocks assemble cleanly. Otherwise the
 exporter verifies that the skip ends on a packet boundary and that the repeated packets match the previous
 packets for that channel group, then writes each verified overlap once. Each descriptor channel becomes one Ogg
 Opus file. Invalid repeat counts or payloads reject that music descriptor so independent streams can still export.

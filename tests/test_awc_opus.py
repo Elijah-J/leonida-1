@@ -821,6 +821,52 @@ class StreamedMusicTest(unittest.TestCase):
                 for collect in (True, False):
                     self.assertEqual(awc.music_channels(bank, *music[0], collect_packets=collect), [])
 
+    def test_interleaved_stereo_skip_and_block_sample_budget_trim_padding(self):
+        # Stereo 20 ms packets (TOC 0xFC) = 960 frames = 1920 interleaved samples each.
+        # Chunk 0 declares block_samples=3840 (2 stereo packets) with 1 trailing padding packet `pad`.
+        # Chunk 1 declares interleaved skip=1920 (repeating `y`, NOT `pad`) and block_samples=3840.
+        x, y, pad, z = b"\xfcx", b"\xfcy", b"\xfcp", b"\xfcz"
+        bank = bytearray(build_repeating_music_bank([
+            [(0, [x, y, pad])],
+            [(1920, [y, z])],
+        ], group_samples=[2 * 2880]))
+        _, music = awc.parse_awc(bank)
+        _, (data_offset, _) = music[0]
+        chunk_size = 2048 * 2
+        struct.pack_into("<I", bank, data_offset + 12, 3840)
+        struct.pack_into("<I", bank, data_offset + chunk_size + 12, 3840)
+        channels = awc.music_channels(bytes(bank), *music[0])
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0][4], [x, y, z])
+        self.assertEqual((channels[0][1], channels[0][5]), (2880, 2))
+
+    def test_short_block_deficit_continuation_and_partial_rejection(self):
+        # Chunk 0 declares block_samples=5760 (3 stereo frames) but supplies only 2 stereo packets (1920 frames -> 960-frame deficit).
+        # Chunk 1 declares skip=1920 (960 frames == prev_deficit -> net_skip=0, keep all packets).
+        x, y, z, w = b"\xfcx", b"\xfcy", b"\xfcz", b"\xfcw"
+        bank = bytearray(build_repeating_music_bank([
+            [(0, [x, y])],
+            [(1920, [z, w])],
+        ], group_samples=[2 * 3840]))
+        _, music = awc.parse_awc(bank)
+        _, (data_offset, _) = music[0]
+        chunk_size = 2048 * 2
+        struct.pack_into("<I", bank, data_offset + 12, 5760)
+        struct.pack_into("<I", bank, data_offset + chunk_size + 12, 3840)
+        channels = awc.music_channels(bytes(bank), *music[0])
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0][4], [x, y, z, w])
+
+        # With skip=3840 (1920 frames; net_skip=960 after 960-frame deficit), drops exactly 1 packet (`z`).
+        struct.pack_into("<I", bank, data_offset + chunk_size + 8, 3840)
+        channels = awc.music_channels(bytes(bank), *music[0])
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0][4], [x, y, w])
+
+        # Non-packet-boundary deficit skip (net_skip=480 when packet is 960 frames) still fails closed.
+        struct.pack_into("<I", bank, data_offset + chunk_size + 8, 2880)
+        self.assertEqual(awc.music_channels(bytes(bank), *music[0]), [])
+
     def test_two_mono_groups_export_two_mono_oggs(self):
         counts, od = self.export([[0x78, 0x78], [0x78, 0x78]], 960)
         self.assertEqual(counts, {"opus": 0, "pcm": 0, "other": 0, "music": 2})
