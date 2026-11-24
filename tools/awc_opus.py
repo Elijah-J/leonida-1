@@ -348,15 +348,19 @@ def music_channels(d: bytes, mus, data, collect_packets: bool = True):
         for c, (count, skip, block_samples) in enumerate(recs):
             start = at + header + before * 2048
             before += count
-            packets = opus_packets(d, start, count * 2048)
-            if packets and info[c][5] < 2:
-                info[c][5] = 2 if any(p[0] & 0x04 for p in packets) else 1
-            block_data[c].append((skip, block_samples, packets))
+            size = count * 2048
+            if info[c][5] < 2:
+                for packet_start, _ in opus_packet_ranges(d, start, size):
+                    info[c][5] = 2 if d[packet_start] & 0x04 else 1
+                    if info[c][5] == 2:
+                        break
+            block_data[c].append((skip, block_samples, start, size))
     for c in range(channels):
         pch = max(1, info[c][5])
         previous = []
         prev_deficit = 0
-        for skip, block_samples, packets in block_data[c]:
+        for skip, block_samples, start, size in block_data[c]:
+            packets = opus_packets(d, start, size)
             kept = packets
             deficit = 0
             if packets and block_samples > 0:
@@ -399,7 +403,10 @@ def music_channels(d: bytes, mus, data, collect_packets: bool = True):
 
 
 def opus_packets(d: bytes, at: int, size: int):
-    out = []
+    return [bytes(d[start:end]) for start, end in opus_packet_ranges(d, at, size)]
+
+
+def opus_packet_ranges(d: bytes, at: int, size: int):
     for b in range(at, at + size, 2048):
         p = b
         end = b + 2048
@@ -407,9 +414,8 @@ def opus_packets(d: bytes, at: int, size: int):
             n, = struct.unpack_from("<H", d, p)
             if n == 0 or p + 2 + n > end:
                 break
-            out.append(bytes(d[p + 2:p + 2 + n]))
+            yield p + 2, p + 2 + n
             p += 2 + n
-    return out
 
 
 def export_stems(ids):

@@ -839,9 +839,11 @@ class StreamedMusicTest(unittest.TestCase):
         self.assertEqual(len(channels), 1)
         self.assertEqual(channels[0][4], [x, y, z])
         self.assertEqual((channels[0][1], channels[0][5]), (2880, 2))
+        metadata = awc.music_channels(bytes(bank), *music[0], collect_packets=False)
+        self.assertEqual(metadata, [(*channels[0][:4], [], 2)])
 
     def test_short_block_deficit_continuation_and_partial_rejection(self):
-        # Chunk 0 declares block_samples=5760 (3 stereo frames) but supplies only 2 stereo packets (1920 frames -> 960-frame deficit).
+        # Chunk 0 budgets 3 stereo packets but supplies 2 (1920 frames, a 960-frame deficit).
         # Chunk 1 declares skip=1920 (960 frames == prev_deficit -> net_skip=0, keep all packets).
         x, y, z, w = b"\xfcx", b"\xfcy", b"\xfcz", b"\xfcw"
         bank = bytearray(build_repeating_music_bank([
@@ -866,6 +868,23 @@ class StreamedMusicTest(unittest.TestCase):
         # Non-packet-boundary deficit skip (net_skip=480 when packet is 960 frames) still fails closed.
         struct.pack_into("<I", bank, data_offset + chunk_size + 8, 2880)
         self.assertEqual(awc.music_channels(bytes(bank), *music[0]), [])
+
+    def test_music_metadata_does_not_retain_all_packet_payloads(self):
+        if tracemalloc.is_tracing():
+            self.skipTest("this allocation check needs its own tracing interval")
+        packet = b"\xfc" + bytes(1023)
+        block_count = 128
+        bank = build_repeating_music_bank([[(0, [packet])]] * block_count)
+        _, music = awc.parse_awc(bank)
+        tracemalloc.start()
+        try:
+            channels = awc.music_channels(bank, *music[0], collect_packets=False)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0][4:], ([], 2))
+        self.assertLess(peak, len(packet) * block_count, f"peak {peak:,} retained packet payloads")
 
     def test_two_mono_groups_export_two_mono_oggs(self):
         counts, od = self.export([[0x78, 0x78], [0x78, 0x78]], 960)
